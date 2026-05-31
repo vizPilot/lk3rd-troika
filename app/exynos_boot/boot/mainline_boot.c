@@ -24,6 +24,10 @@
 
 #include <lk3rd/boot_reason.h>
 
+#define DEFAULT_CMDLINE "root=/dev/mem0 initrd=0x84000000,0x1000000"
+
+extern char cmd_line_override[4096 - 42];
+
 /* Hacky. */
 void arm_generic_timer_disable(void);
 int cmd_scatter_load_boot(int argc, const cmd_args *argv);
@@ -59,18 +63,13 @@ int add_dt_ramdisk(uint32_t ramdisk_size)
 	if (offset < 0)
 		goto err;
 
-	ret = fdt_add_subnode(fdt_dtb, offset, "chosen");
+	fdt_add_subnode(fdt_dtb, offset, "chosen");
 
-	// Make the rest
-	ret = set_fdt_val("/chosen", "bootargs", "root=/dev/mem0 initrd=0x84000000,0x1000000");
+	ret = set_fdt_val("/chosen", "linux,initrd-start", "<0x84000000>");
 	if (ret != 0)
 		goto err;
 
-	ret += set_fdt_val("/chosen", "linux,initrd-start", "<0x84000000>");
-	if (ret != 0)
-		goto err;
-
-	ret += set_fdt_val("/chosen", "linux,initrd-end", "<0x84FFFFFF>");
+	ret = set_fdt_val("/chosen", "linux,initrd-end", "<0x84FFFFFF>");
 	if (ret != 0)
 		goto err;
 
@@ -85,6 +84,7 @@ void mainline_boot_common(boot_img_hdr *b_hdr)
 {
 	int ret;
 	cmd_args argv[6];
+	char cmd_line[4096];
 
 	if (strncmp((char *)b_hdr->magic, BOOT_MAGIC, 8))
 	{
@@ -123,6 +123,25 @@ void mainline_boot_common(boot_img_hdr *b_hdr)
 	}
 	else
 		printf("No ramdisk - skipping.\n");
+
+	// The override takes full priority over boot image cmdline and defaults.
+	if (cmd_line_override[0] != '\0') {
+		snprintf(cmd_line, 4096, "%s %s", DEFAULT_CMDLINE, cmd_line_override);
+	}
+	else
+	{
+		if (b_hdr->cmdline[0] && (!b_hdr->cmdline[BOOT_ARGS_SIZE - 1])) {
+			snprintf(cmd_line, 4096, "%s %s", DEFAULT_CMDLINE, b_hdr->cmdline);
+		}
+		else {
+			printf("No cmdline - set default.\n");
+			snprintf(cmd_line, 4096, "%s", DEFAULT_CMDLINE);
+		}
+	}
+
+	ret = set_fdt_val("/chosen", "bootargs", cmd_line);
+	if (ret != 0)
+		printf("Failed to add bootargs: %s\n", fdt_strerror(ret));
 
 	/* notify EL3 Monitor end of bootloader */
 	exynos_smc(SMC_CMD_END_OF_BOOTLOADER, 0, 0, 0);
