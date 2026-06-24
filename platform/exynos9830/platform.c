@@ -30,6 +30,7 @@
 #include <dev/if_pmic_s2mu106.h>
 #include <dev/fg_s2mu106.h>
 #include <dev/debug/dss.h>
+#include <platform/bootimg.h>
 #include <platform/ldfw.h>
 #include <platform/secure_boot.h>
 #include <platform/h-arx.h>
@@ -51,6 +52,7 @@
 #include <lk3rd/boot_reason.h>
 #include <lk3rd/kaslr_status.h>
 #include <lk3rd/mainline_quirks.h>
+#include <lk3rd/automatic_repartitioning.h>
 
 #ifdef CONFIG_GET_B_REV_FROM_ADC
 #include <dev/exynos_adc.h>
@@ -102,6 +104,8 @@ volatile bootloader_reserved_region bootloader_reserved_regions[] = {
 
 volatile int bootloader_reserved_region_count = sizeof(bootloader_reserved_regions) /
 										sizeof(bootloader_reserved_regions[0]);
+
+void platform_do_reboot(const char *cmd_buf);
 
 #ifdef CONFIG_GET_B_REV_FROM_ADC
 int get_board_rev_adc(int *sh)
@@ -461,9 +465,44 @@ void sanitise_persistent_storage(void)
 		lk3rd_switch_mainline_quirks(false);
 
 	option_enabled = lk3rd_get_kaslr_status();
-	if(option_enabled != 0 && option_enabled != 1) // Not a sane value  
+	if(option_enabled != 0 && option_enabled != 1) // Not a sane value
 		lk3rd_switch_kaslr_status(true);
 
+}
+
+void sanitise_image_props(void)
+{
+	u32 boot_os_level;
+	void *part = part_get("boot");
+
+	part_read(part, (void *)BOOT_BASE);
+
+	boot_img_hdr *tmp = (boot_img_hdr *)BOOT_BASE;
+
+	if(strncmp("ANDROID!", (const char *)tmp->magic, 8))
+		return;
+
+	boot_os_level = tmp->os_version;
+
+	part = part_get("lk3rd");
+	part_read(part, (void *)BOOT_BASE);
+
+	if (boot_os_level == tmp->os_version)
+		return;
+
+	tmp->os_version = boot_os_level;
+
+	part_write(part, (void *)BOOT_BASE);
+
+	for (int i = 5; i > 0; i--)
+	{
+		show_warning("lk3rd TEEGRIS sanity repair", "A mismatch between the boot image properties and properties stored in lk3rd has been detected and "
+                                                            "resolved.\n\n"
+                                                            "Your device will reboot in %ds", i);
+		mdelay(1000);
+	}
+
+	platform_do_reboot("");
 }
 
 void platform_init(void)
@@ -513,6 +552,15 @@ void platform_init(void)
 	printf("Device does not have an SD card slot! Skip SD init\n");
 #endif
 	part_init();
+	if (add_lk3rd_part() != 0)
+	{
+		show_warning("Automatic Repartitioning", "Notice! Repartitioning failed!!\n"
+                                                         "DO NOT REBOOT THE DEVICE.\n"
+                                                         "Querying GPT rebuild...");
+
+		mdelay(3500);
+		query_gpt_rebuild(true);
+	}
 
 	dss_fdt_init();
 	dfd_get_dbgc_version();
@@ -592,4 +640,5 @@ by_dumpgpr_out:
 	chg_init_max77705();
 
 	sanitise_persistent_storage();
+	sanitise_image_props();
 }
